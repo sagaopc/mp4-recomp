@@ -61,13 +61,23 @@ jobs:
           set -euo pipefail
           url=$(gh api --paginate 'repos/KhronosGroup/glslang/releases?per_page=100' \
             --jq '.[] | select(.tag_name | test("^1[5-9]\\.")) | .assets[]
-                  | select(.name | test("windows.*x64.*Release\\.zip$"; "i")) | .browser_download_url' | head -n 1)
-          test -n "$url" || { echo "no glslang Windows build found"; exit 1; }
-          echo "glslang: $url"
-          curl -fsSL --retry 3 -o glslang.zip "$url"
-          7z x -y -oglslang glslang.zip > /dev/null
-          exe=$(find glslang -iname glslang.exe | head -n 1)
-          test -n "$exe"
+                  | select(.name | test("windows.*x64.*Release\\.zip$"; "i")) | .browser_download_url' | head -n 1 || true)
+          exe=
+          if [ -n "$url" ]; then
+            echo "glslang: $url"
+            curl -fsSL --retry 3 -o glslang.zip "$url" && 7z x -y -oglslang glslang.zip > /dev/null || true
+            exe=$(find glslang -iname glslang.exe 2>/dev/null | head -n 1)
+          fi
+          if [ -z "$exe" ]; then
+            # no prebuilt Windows glslang in the releases: build the standalone compiler from source
+            echo "glslang: building from source"
+            git clone -q --depth 1 https://github.com/KhronosGroup/glslang glslang-src
+            cmake -S glslang-src -B glslang-build -DENABLE_OPT=OFF -DGLSLANG_TESTS=OFF -DENABLE_GLSLANG_BINARIES=ON > /dev/null
+            cmake --build glslang-build --config Release -j 4 > /dev/null
+            exe=$(find glslang-build -iname glslang.exe | head -n 1)
+          fi
+          test -n "$exe" || { echo "glslang.exe not found"; exit 1; }
+          "$exe" --version || true
           GLSLANG="$(cygpath -w "$PWD/$exe")" SWR_NO_DLSS=1 PATH="$PWD/gcc/Library/bin:$PATH" python/python.exe work-profiler/build_snxvk2.py
           ls -la runtime/snxvk/*.a
 

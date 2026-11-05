@@ -970,6 +970,14 @@ static int dsa_copy(Tex* st, u64 dst, u32 w, u32 h){
 static Tex* tex_from_tic_(u32* tic){
   u64 gva=((u64)(tic[2]&0xFFFF)<<32)|tic[1];
   if(g_ndsa){ u32 ff=tic[0]&0x7F; if(ff==0x0D || ff==0x0E || ff==0x29 || ff==0x2A){ Tex* da=dsa_find(gva); if(da){ da->last_used=g_frame; return da; } } }   /* depth-stencil copied by the 2D engine */
+  /* G24R8 / G8R24 straight over a depth-stencil RT (no 2D copy in between): Prime 4's fog and light composite reads the
+     scene depth as 0x29 and its stencil as 0x0E from one TIC address. 0x0E isn't a format we sample, so that read
+     got no texture at all; it gets the depth-stencil RT, as the 2D-copy case above does (read as stencil) */
+  { u32 ff=tic[0]&0x7F; static int off=-1; if(off<0) off=getenv("SWR_NO_DS_TIC")!=NULL;
+    if((ff==0x0D || ff==0x0E) && !off){ Tex* r0=tex_find_rt(gva);
+      if(r0 && r0->f.depth){ u32 t2[8]; memcpy(t2,tic,32); t2[0]=(t2[0]&~0x7Fu)|0x29u;
+        static int said; if(!said){ said=1; LOG("gpu: TIC %02x reads the depth-stencil render target at %llx: given that target (read as stencil)\n",ff,(unsigned long long)gva); }
+        return tex_from_tic_(t2); } } }
   u32 hv=(tic[2]>>21)&7; int bl= hv==3||hv==4;
   u32 w=(tic[4]&0xFFFF)+1, h=(tic[5]&0xFFFF)+1, d=((tic[5]>>16)&0x3FFF)+1; u32 type=(tic[4]>>23)&0xF;
   int srgb=(tic[4]>>22)&1; u32 levels=((tic[3]>>28)&0xF)+1;
