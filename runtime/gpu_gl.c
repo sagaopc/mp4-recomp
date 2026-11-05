@@ -247,7 +247,7 @@ static GlFmt rt_format(u32 f){
 typedef struct Tex {
   u64 gva; u32 w, h, d, levels, target; u32 fkey; GlFmt f;
   u32 bl, bh, bd, pitch; u64 size;
-  GLuint id; u64 hash; int is_rt, gpu_written; u32 frame_checked, last_used; GLint swz[4]; u64 tr_last; u32 stable, next_check; u64 video_gen; GLuint view; GLenum view_target; GLint vswz[4]; u32 wgen, crop_gen, nup, agen, apend; int abase; u64 wtick; GLuint sview, sview_src, iview, iview_src; GLenum iview_fmt; GLuint rb_pbo; GLsync rb_fence; u32 rb_w, rb_h, rb_frame, rb_streak; const u8* rb_ptr; struct Tex* crop; struct Tex* lay; struct Tex* vol; int skipclr, zero3d; u64 alias; u64 shash; u32 tfull, dgen; u64* slh; u64 slb; u32 nsl, slz, slcur, sl_lbh, sl_lbd, sl_rowb, sl_th;
+  GLuint id; u64 hash; int is_rt, gpu_written; u32 frame_checked, last_used; GLint swz[4]; u64 tr_last, tr_full_last; u32 stable, next_check; u64 video_gen; GLuint view; GLenum view_target; GLint vswz[4]; u32 wgen, crop_gen, nup, agen, apend; int abase; u64 wtick; GLuint sview, sview_src, iview, iview_src; GLenum iview_fmt; GLuint rb_pbo; GLsync rb_fence; u32 rb_w, rb_h, rb_frame, rb_streak; const u8* rb_ptr; struct Tex* crop; struct Tex* lay; struct Tex* vol; int skipclr, zero3d; u64 alias; u64 shash; u32 tfull, dgen; u64* slh; u64 slb; u32 nsl, slz, slcur, sl_lbh, sl_lbd, sl_rowb, sl_th;
   GLuint pre; u32 pre_wgen, pre_w, pre_h; int pre_lv;   /* box-averaged copy for downsampling reads at a high resolution scale */
   struct Tex* next;
   u32 lsig[16];   /* layered_from_rts: each level's source signature at its last copy */
@@ -2729,8 +2729,35 @@ static void tr_save(const char* path, const u8* rgba, u32 w, u32 h){
     fwrite(row,1,(size_t)w*6,f); }
   free(row); fclose(f); }
 
+/* SWR_TRACE_FULL=1: screen-sized targets (1000 px wide or more) are saved at 640x360 from a half-float copy with a
+   tone curve, so HDR scenes aren't blown out and a defect in one part of the screen (Windows/NVIDIA: the wet floor lit
+   on one half only) can be found draw by draw. Colour only, f<n>.ppm next to the usual d<n>.ppm */
+#define TRFW 640
+#define TRFH 360
+static GLuint g_tr_fb2, g_tr_tx2;
+static int tr_full(Tex* t, char* out){
+  static int on=-1; if(on<0) on=getenv("SWR_TRACE_FULL")!=NULL;
+  if(!on || t->w<1000) return 0;
+  if(!g_tr_fb2){ glGenFramebuffers(1,&g_tr_fb2); glGenTextures(1,&g_tr_tx2); glBindTexture(GL_TEXTURE_2D,g_tr_tx2); glTexStorage2D(GL_TEXTURE_2D,1,GL_RGBA16F,TRFW,TRFH); }
+  GLboolean sc=glIsEnabled(GL_SCISSOR_TEST), sr=glIsEnabled(GL_FRAMEBUFFER_SRGB);
+  glDisable(GL_SCISSOR_TEST); glDisable(GL_FRAMEBUFFER_SRGB); glColorMaski(0,1,1,1,1);
+  glBindFramebuffer(GL_READ_FRAMEBUFFER,g_rfbo); glFramebufferTexture2D(GL_READ_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,t->id,0); glReadBuffer(GL_COLOR_ATTACHMENT0);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER,g_tr_fb2); glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,g_tr_tx2,0); { GLenum b=GL_COLOR_ATTACHMENT0; glDrawBuffers(1,&b); }
+  glBlitFramebuffer(0,0,(GLint)SC(t->w),(GLint)SC(t->h),0,0,TRFW,TRFH,GL_COLOR_BUFFER_BIT,GL_LINEAR);
+  static float fp[TRFW*TRFH*4]; static u8 px[TRFW*TRFH*3];
+  glBindFramebuffer(GL_READ_FRAMEBUFFER,g_tr_fb2); glReadBuffer(GL_COLOR_ATTACHMENT0); glPixelStorei(GL_PACK_ALIGNMENT,1); glReadPixels(0,0,TRFW,TRFH,GL_RGBA,GL_FLOAT,fp);
+  glBindFramebuffer(GL_FRAMEBUFFER,g_fbo); if(sc) glEnable(GL_SCISSOR_TEST); if(sr) glEnable(GL_FRAMEBUFFER_SRGB);
+  for(int y=0;y<TRFH;y++) for(int x=0;x<TRFW;x++) for(int c=0;c<3;c++){
+    float v=fp[((size_t)(TRFH-1-y)*TRFW+x)*4+c]; if(!(v>0)) v=0; v=v/(1.0f+v); v=powf(v,1.0f/2.2f);   /* rows bottom-up in GL */
+    px[((size_t)y*TRFW+x)*3+c]=(u8)(v*255.0f+0.5f); }
+  u64 h=fast_hash(px,sizeof px,0); if(h==t->tr_full_last){ strcpy(out,"(no change)"); return 1; }
+  t->tr_full_last=h; char p[128]; snprintf(p,sizeof p,"captures/traces/f%04d.ppm",g_tr_n);
+  FILE* f=fopen(p,"wb"); if(f){ fprintf(f,"P6\n%d %d\n255\n",TRFW,TRFH); fwrite(px,1,sizeof px,f); fclose(f); }
+  g_tr_img++; snprintf(out,32,"f%04d.ppm",g_tr_n); return 1; }
+
 static void tr_thumb(Tex* t, char* out){ state_dirty();
   strcpy(out,"-"); if(!t || t->f.depth || t->f.is_int || g_tr_img>=2500) return;
+  if(tr_full(t,out)) return;
   if(!g_tr_fb){ glGenFramebuffers(1,&g_tr_fb); glGenTextures(1,&g_tr_tx); glBindTexture(GL_TEXTURE_2D,g_tr_tx); glTexStorage2D(GL_TEXTURE_2D,1,GL_RGBA8,TRW,TRH); }
   GLboolean sc=glIsEnabled(GL_SCISSOR_TEST), sr=glIsEnabled(GL_FRAMEBUFFER_SRGB);
   glDisable(GL_SCISSOR_TEST); glDisable(GL_FRAMEBUFFER_SRGB); glColorMaski(0,1,1,1,1);
