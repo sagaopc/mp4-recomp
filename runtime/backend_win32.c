@@ -391,7 +391,8 @@ void* backend_window_monitor(void){ return g_hwnd? (void*)MonitorFromWindow(g_hw
 typedef HGLRC (WINAPI *CCA)(HDC,HGLRC,const int*);
 /* shader compile threads (gpu_gl.c worker_start): NVIDIA compiles GLSL on the thread that asks, so each thread gets its
    own context in the game's share group and several shaders build at once. With one, a new area queued hundreds of
-   shaders behind it and the game froze 0.2-4 s at each first draw. [Performance] shader_threads (0 = automatic) */
+   shaders behind it and the game froze 0.2-4 s at each first draw. [Performance] shader_threads (0 = automatic;
+   -1 = no compile thread, shaders build on the GPU thread: Zink on NVIDIA crashed in nvgpucomp64.dll linking there) */
 int g_opt_shader_threads;
 static HGLRC g_wctxs[8]; static int g_nwctx; static volatile LONG g_wnext, g_wclass;
 typedef BOOL (WINAPI *SWI)(int);
@@ -405,9 +406,9 @@ int backend_gl_create(void){
   static const int vers[4][2]={{4,6},{4,5},{4,4},{4,3}};
   for(int i=0;i<4 && !g_ctx && cca;i++){ int ca[]={0x2091,vers[i][0],0x2092,vers[i][1],0x9126,0x00000001,0x2094,getenv("SWR_GL_DRIVER_DEBUG")?1:0,0}; g_ctx=cca(g_hdc,NULL,ca);
     if(g_ctx){ SYSTEM_INFO si; GetSystemInfo(&si); int want=g_opt_shader_threads>0? g_opt_shader_threads : (int)si.dwNumberOfProcessors/3;
-      if(want<2 && g_opt_shader_threads<=0) want=2; if(want>8) want=8;
+      if(want<2 && g_opt_shader_threads==0) want=2; if(want>8) want=8; if(g_opt_shader_threads<0) want=0;
       for(g_nwctx=0;g_nwctx<want;g_nwctx++){ g_wctxs[g_nwctx]=cca(g_hdc,g_ctx,ca); if(!g_wctxs[g_nwctx]) break; }   /* shared contexts for the shader compile threads */
-      { extern int g_gl_workers; g_gl_workers= g_nwctx? g_nwctx : 1; } } }
+      { extern int g_gl_workers; g_gl_workers= g_nwctx? g_nwctx : (g_opt_shader_threads<0? 0 : 1); } } }
   wglMakeCurrent(NULL,NULL); wglDeleteContext(tmp);
   if(!g_ctx){ fatal("Your graphics card does not support OpenGL 4.3.\nPlease update your GPU driver."); return 0; }
   wglMakeCurrent(g_hdc,g_ctx);

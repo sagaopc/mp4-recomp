@@ -187,9 +187,9 @@ int backend_gl_create(void){
   int (*old)(Display*,XErrorEvent*)=XSetErrorHandler(xerr_ignore);
   for(int i=0;i<4 && !ctx && cca;i++){ int ca[]={0x2091,vers[i][0],0x2092,vers[i][1],0x9126,0x00000001,None}; ctx=cca(dpy,fc[0],NULL,True,ca); XSync(dpy,False);
     if(ctx){ long nc=sysconf(_SC_NPROCESSORS_ONLN); int want=g_opt_shader_threads>0? g_opt_shader_threads : (int)(nc/4);
-      if(want<2 && g_opt_shader_threads<=0) want=2; if(want>8) want=8;
+      if(want<2 && g_opt_shader_threads==0) want=2; if(want>8) want=8; if(g_opt_shader_threads<0) want=0;
       for(g_nwctx=0;g_nwctx<want;g_nwctx++){ wctx[g_nwctx]=cca(dpy,fc[0],ctx,True,ca); XSync(dpy,False); if(!wctx[g_nwctx]) break; }
-      { extern int g_gl_workers; g_gl_workers= g_nwctx? g_nwctx : 1; } } }
+      { extern int g_gl_workers; g_gl_workers= g_nwctx? g_nwctx : (g_opt_shader_threads<0? 0 : 1); } } }
   wfc=fc[0];
   XSetErrorHandler(old);
   if(!ctx){ fatal("Your graphics driver does not support OpenGL 4.3.\nPlease update Mesa or your GPU driver."); return 0; }
