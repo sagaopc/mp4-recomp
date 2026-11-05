@@ -27,10 +27,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # first match taken in bash, not with head: head closing the pipe early made gh fail ("pipe is being closed")
           gcc_url=$(gh api --paginate 'repos/brechtsanders/winlibs_mingw/releases?per_page=100' \
             --jq '.[] | select(.tag_name | test("^14\\.2\\.0posix-.*-ucrt-r[0-9]+$")) | .assets[]
                   | select(.name | test("^winlibs-x86_64-posix-seh-gcc-14\\.2\\.0-mingw-w64ucrt-[0-9.]+-r[0-9]+\\.zip$"))
-                  | .browser_download_url' | head -n 1)
+                  | .browser_download_url'); gcc_url=${gcc_url%%$'\n'*}
           test -n "$gcc_url" || { echo "winlibs GCC 14.2.0 UCRT zip not found"; exit 1; }
           echo "GCC: $gcc_url"
           curl -fsSL --retry 3 -o gcc.zip "$gcc_url"
@@ -44,7 +45,7 @@ jobs:
 
           sdl_url=$(gh api --paginate 'repos/libsdl-org/SDL/releases?per_page=100' \
             --jq '.[] | select(.tag_name | test("^release-2\\.[0-9]+\\.[0-9]+$")) | .assets[]
-                  | select(.name | test("^SDL2-2\\.[0-9.]+-win32-x64\\.zip$")) | .browser_download_url' | head -n 1)
+                  | select(.name | test("^SDL2-2\\.[0-9.]+-win32-x64\\.zip$")) | .browser_download_url'); sdl_url=${sdl_url%%$'\n'*}
           test -n "$sdl_url" || { echo "SDL2 win32-x64 zip not found"; exit 1; }
           echo "SDL2: $sdl_url"
           curl -fsSL --retry 3 -o sdl.zip "$sdl_url"
@@ -61,12 +62,12 @@ jobs:
           set -euo pipefail
           url=$(gh api --paginate 'repos/KhronosGroup/glslang/releases?per_page=100' \
             --jq '.[] | select(.tag_name | test("^1[5-9]\\.")) | .assets[]
-                  | select(.name | test("windows.*x64.*Release\\.zip$"; "i")) | .browser_download_url' | head -n 1 || true)
+                  | select(.name | test("windows.*x64.*Release\\.zip$"; "i")) | .browser_download_url' || true); url=${url%%$'\n'*}
           exe=
           if [ -n "$url" ]; then
             echo "glslang: $url"
             curl -fsSL --retry 3 -o glslang.zip "$url" && 7z x -y -oglslang glslang.zip > /dev/null || true
-            exe=$(find glslang -iname glslang.exe 2>/dev/null | head -n 1)
+            exe=$(find glslang -iname glslang.exe 2>/dev/null || true); exe=${exe%%$'\n'*}
           fi
           if [ -z "$exe" ]; then
             # no prebuilt Windows glslang in the releases: build the standalone compiler from source
@@ -74,7 +75,7 @@ jobs:
             git clone -q --depth 1 https://github.com/KhronosGroup/glslang glslang-src
             cmake -S glslang-src -B glslang-build -DENABLE_OPT=OFF -DGLSLANG_TESTS=OFF -DENABLE_GLSLANG_BINARIES=ON > /dev/null
             cmake --build glslang-build --config Release -j 4 > /dev/null
-            exe=$(find glslang-build -iname glslang.exe | head -n 1)
+            exe=$(find glslang-build -iname glslang.exe); exe=${exe%%$'\n'*}
           fi
           test -n "$exe" || { echo "glslang.exe not found"; exit 1; }
           "$exe" --version || true
