@@ -1976,7 +1976,11 @@ static GLenum img_fmt(GLenum f);
    marked GPU-written, so it is sampled as it is instead of being reloaded from memory (or, for an empty 3D volume,
    replaced by a neutral table) */
 static int g_img_pending;
+static Tex* g_img_t[8]; static int g_img_n;   /* the images this draw writes, for the frame trace (tr_vol) */
+static char g_tr_va[8192]; static size_t g_tr_va_n;   /* its vertex attributes, written under the draw's trace entry */
+static int g_tr_on;
 static void bind_imgs(GpuChannel* ch, int stage, Sh* s){
+  if(stage==0) g_img_n=0;
   if(stage==0 && g_img_pending){ glMemoryBarrier(0x20|0x08|0x100);   /* image access | texture fetch | texture update */ g_img_pending=0; }
   if(!s || !s->si.nimg) return;
   u32* r=ch->r3d; u32 tcb=r[0x982]&31; u64 tic_base=((u64)r[0x55D]<<32)|r[0x55E]; int base= stage==4? 4 : 0;
@@ -1984,6 +1988,7 @@ static void bind_imgs(GpuChannel* ch, int stage, Sh* s){
     if(cba) gmem_read(cba+(u64)s->si.img[i].cbuf_off*4,&h,4);
     u32 tic[8]; gmem_read(tic_base+(u64)(h&0xFFFFF)*32ull,tic,32); Tex* t= h? tex_from_tic(tic) : NULL; GLenum f= t? img_fmt(t->f.ifmt) : 0;
     if(t && f){ int ty=s->si.img[i].type; glBindImageTexture(base+i,t->id,0,(ty==2||ty==4||ty==5)? GL_TRUE : GL_FALSE,0,GL_WRITE_ONLY,f); t->gpu_written=1; t->wgen++; g_img_pending=1;
+      if(g_tr_on && g_img_n<8) g_img_t[g_img_n++]=t;
       static int said; if(said<8){ said++; LOG("gpu: %s shader writes image %ux%ux%u at %llx (format %x)\n",stage==4? "pixel" : "vertex",t->w,t->h,t->d,(unsigned long long)t->gva,f); } }
     else { glBindImageTexture(base+i,0,0,GL_FALSE,0,GL_WRITE_ONLY,GL_R32F); static int said; if(said<4){ said++; LOG("gpu: image %d of a %s shader without a usable texture (handle %x)\n",i,stage==4? "pixel" : "vertex",h); } } } }
 
@@ -2755,6 +2760,34 @@ static int tr_full(Tex* t, char* out){
   FILE* f=fopen(p,"wb"); if(f){ fprintf(f,"P6\n%d %d\n255\n",TRFW,TRFH); fwrite(px,1,sizeof px,f); fclose(f); }
   g_tr_img++; snprintf(out,32,"f%04d.ppm",g_tr_n); return 1; }
 
+/* a volume an image store wrote (Prime 4's fog/light froxels): how many of its columns hold data, left and right half
+   (on an RTX 4060 the right half of the screen is lit differently), and 4 slices + a coverage map in v<draw>_<n>.ppm */
+static void tr_vol(Tex* t, int k){
+  if(!t || t->f.is_int || t->f.depth || (t->target!=GL_TEXTURE_3D && t->target!=GL_TEXTURE_2D_ARRAY)) return;
+  u32 W=t->is_rt? SC(t->w) : t->w, H=t->is_rt? SC(t->h) : t->h, D=t->d; if(!W || !H || !D) return;
+  if((u64)W*H*D>(4u<<20)){ trace_note("  image%d %ux%ux%u: too large to dump\n",k,W,H,D); return; }
+  float* v=malloc((size_t)W*H*D*16); if(!v) return;
+  glMemoryBarrier(0x20|0x08|0x100); glBindTexture(t->target,t->id); glPixelStorei(GL_PACK_ALIGNMENT,4); glGetTexImage(t->target,0,GL_RGBA,GL_FLOAT,v);
+  state_dirty(); mb_reset();
+  u32 cols[2]={0,0}, tot[2]={0,0}; double sum[2]={0,0};
+  u8* cov=calloc((size_t)W*H,1);
+  for(u32 y=0;y<H;y++) for(u32 x=0;x<W;x++){ int half= x*2>=W; int any=0; tot[half]++;
+    for(u32 z=0;z<D;z++){ const float* q=v+(((size_t)z*H+y)*W+x)*4; double m=fabs(q[0])+fabs(q[1])+fabs(q[2])+fabs(q[3]); if(m>1e-6) any=1; sum[half]+=m; }
+    if(any){ cols[half]++; cov[(size_t)y*W+x]=255; } }
+  trace_note("  image%d %ux%ux%u at %llx: columns with data left %u of %u, right %u of %u; mean left %.4g right %.4g\n",k,W,H,D,(unsigned long long)t->gva,
+    cols[0],tot[0],cols[1],tot[1],tot[0]? sum[0]/tot[0]/D : 0.0,tot[1]? sum[1]/tot[1]/D : 0.0);
+  /* slices 0, D/4, D/2, 3D/4 and the coverage map, side by side, 4x */
+  u32 Z=4, OW=W*Z*5, OH=H*Z; u8* o=malloc((size_t)OW*OH*3);
+  if(o){ u32 zs[4]={0,D/4,D/2,(3*D)/4};
+    for(u32 y=0;y<OH;y++) for(u32 x=0;x<OW;x++){ u32 pnl=x/(W*Z), sx=(x%(W*Z))/Z, sy=y/Z; u8* d=o+((size_t)y*OW+x)*3;
+      if(pnl==4){ d[0]=d[1]=d[2]=cov[(size_t)sy*W+sx]; continue; }
+      const float* q=v+(((size_t)zs[pnl]*H+sy)*W+sx)*4;
+      for(int c=0;c<3;c++){ float f=q[c]; if(!(f>0)) f=0; f=f/(1.0f+f); d[c]=(u8)(powf(f,1.0f/2.2f)*255.0f+0.5f); } }
+    char p[128]; snprintf(p,sizeof p,"captures/traces/v%04d_%d.ppm",g_tr_n,k); FILE* fo=fopen(p,"wb");
+    if(fo){ fprintf(fo,"P6\n%u %u\n255\n",OW,OH); fwrite(o,1,(size_t)OW*OH*3,fo); fclose(fo); trace_note("  image%d slices: %s\n",k,p+16); }
+    free(o); }
+  free(cov); free(v); }
+
 static void tr_thumb(Tex* t, char* out){ state_dirty();
   strcpy(out,"-"); if(!t || t->f.depth || t->f.is_int || g_tr_img>=2500) return;
   if(tr_full(t,out)) return;
@@ -2796,6 +2829,7 @@ static void tr_draw(GpuChannel* ch, Sh* vs, Sh* fs, u64 vsa, u64 fsa, int indexe
   if(!g_tr_on || g_tr_n>=6000) return; u32* r=ch->r3d; g_tr_n++;
   float vt[6]; memcpy(vt,&r[0x280],24); float ref; memcpy(&ref,&r[0x4C4],4);
   trace_note("#%d DRAW vs=%016llx fs=%016llx count=%u inst=%u topo=%u idx=%d\n",g_tr_n,(unsigned long long)vs->hash,(unsigned long long)fs->hash,count,instances,topology,indexed);
+  if(g_tr_va_n){ trace_note("%s",g_tr_va); g_tr_va_n=0; g_tr_va[0]=0; }
   for(int i=0;i<g_nrt;i++) if(g_rt[i]) trace_note("  rt%d %llx %ux%u fmt=%x%s\n",i,(unsigned long long)g_rt[i]->gva,g_rt[i]->w,g_rt[i]->h,g_rt[i]->fkey,
       g_rt[i]->vol? (g_fb_lay[i]==-1? " (volume: all layers)" : " (volume: one layer)") : "");
   if(g_zt){ float dn,df; memcpy(&dn,&r[0x302],4); memcpy(&df,&r[0x303],4);
@@ -2810,7 +2844,9 @@ static void tr_draw(GpuChannel* ch, Sh* vs, Sh* fs, u64 vsa, u64 fsa, int indexe
     for(int st=0;st<2;st++){ Sh* sh= st? fs : vs; int stg= st? 4 : 0; if(!sh || (st && !fsa)) continue;
       for(int ci=0;ci<18;ci++) if(sh->si.cbuf_mask&(1u<<ci)){ u64 ca=g_cb.cb[stg][ci]; if(!ca) continue; float v[128]; gmem_read(ca,v,sizeof v);
         trace_note("  %s cb%d @%llx:",st? "fs" : "vs",ci,(unsigned long long)ca); for(int k=0;k<nv;k++) trace_note(" d[%d]=(%.6g,%.6g,%.6g,%.6g)",k,v[k*4],v[k*4+1],v[k*4+2],v[k*4+3]); trace_note("\n"); } } } }
-  char nm[40]; tr_thumb(g_rt[0],nm); trace_note("  result rt0: %s\n",nm); }
+  char nm[40]; tr_thumb(g_rt[0],nm); trace_note("  result rt0: %s\n",nm);
+  for(int k=0;k<g_img_n;k++) tr_vol(g_img_t[k],k);
+  g_img_n=0; }
 
 static void trace_frame(void){
   if(g_tr_on){
@@ -3000,6 +3036,10 @@ void r3d_draw_gl(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count
     u32* va=&r[0x700+buf*4];
     if(constant || !(va[0]&0x1000)){ VA_OFF(i); if(!va_const[i]){ glVertexAttrib4f(i,0,0,0,1); va_const[i]=1; } continue; }
     u64 start=((u64)va[1]<<32)|va[2]; u64 lim=((u64)r[0x7C0+buf*2]<<32)|r[0x7C1+buf*2]; u32 stride=va[0]&0xFFF;
+    if(g_tr_on && g_tr_va_n<sizeof g_tr_va-512){ u32 w[3][4]; for(int k=0;k<3;k++) gmem_read(start+off+(u64)k*stride,w[k],16);
+      g_tr_va_n+=snprintf(g_tr_va+g_tr_va_n,sizeof g_tr_va-g_tr_va_n,"  va%d: buf %u at %llx..%llx, offset %u, stride %u, size %02x, type %u%s, divisor %u | v0 %08x %08x %08x %08x | v1 %08x %08x %08x %08x | v2 %08x %08x %08x %08x\n",
+        i,buf,(unsigned long long)start,(unsigned long long)lim,off,stride,size,ty,bgra? " bgra" : "",r[0x620+buf]? (va[3]? va[3] : 1) : 0,
+        w[0][0],w[0][1],w[0][2],w[0][3],w[1][0],w[1][1],w[1][2],w[1][3],w[2][0],w[2][1],w[2][2],w[2][3]); }
     u64 len= lim>=start? lim-start+1 : 0; if(len>64u<<20) len=64u<<20;
     if(!len) { VA_OFF(i); continue; }
     /* Draws into one vertex buffer each bind it from their own first vertex to the buffer's end (same limit, start a
