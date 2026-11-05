@@ -11,7 +11,7 @@
 #include <windows.h>
 #include <mmsystem.h>  /* timeBeginPeriod (windows.h leaves it out with WIN32_LEAN_AND_MEAN) */
 
-static HWND g_hwnd; static HDC g_hdc; static HGLRC g_ctx, g_wctx;
+static HWND g_hwnd; static HDC g_hdc; static HGLRC g_ctx;
 static HWND g_glwnd; static int g_want_vk;   /* renderer=vulkan: GL renders on the hidden g_glwnd, Vulkan presents on g_hwnd */
 static volatile int g_ww=1280, g_wh=720; static u64 keys_held,keys_tapped;static int test_tap_sample; static int g_fullscreen=0, g_want_fs=1;
 static WINDOWPLACEMENT g_wp={sizeof(WINDOWPLACEMENT)};
@@ -389,6 +389,11 @@ void* backend_window_monitor(void){ return g_hwnd? (void*)MonitorFromWindow(g_hw
 
 /* ---------------------------------------------------------------- GL, GPU thread */
 typedef HGLRC (WINAPI *CCA)(HDC,HGLRC,const int*);
+/* shader compile threads (gpu_gl.c worker_start): NVIDIA compiles GLSL on the thread that asks, so each thread gets its
+   own context in the game's share group and several shaders build at once. With one, a new area queued hundreds of
+   shaders behind it and the game froze 0.2-4 s at each first draw. [Performance] shader_threads (0 = automatic) */
+int g_opt_shader_threads;
+static HGLRC g_wctxs[8]; static int g_nwctx; static volatile LONG g_wnext, g_wclass;
 typedef BOOL (WINAPI *SWI)(int);
 static void* backend_gl_proc_raw(const char* n);
 #include "vk_present.inc"
@@ -399,7 +404,10 @@ int backend_gl_create(void){
   CCA cca=(CCA)wglGetProcAddress("wglCreateContextAttribsARB");
   static const int vers[4][2]={{4,6},{4,5},{4,4},{4,3}};
   for(int i=0;i<4 && !g_ctx && cca;i++){ int ca[]={0x2091,vers[i][0],0x2092,vers[i][1],0x9126,0x00000001,0x2094,getenv("SWR_GL_DRIVER_DEBUG")?1:0,0}; g_ctx=cca(g_hdc,NULL,ca);
-    if(g_ctx) g_wctx=cca(g_hdc,g_ctx,ca); }   /* second shared context for the shader compile thread */
+    if(g_ctx){ SYSTEM_INFO si; GetSystemInfo(&si); int want=g_opt_shader_threads>0? g_opt_shader_threads : (int)si.dwNumberOfProcessors/3;
+      if(want<2 && g_opt_shader_threads<=0) want=2; if(want>8) want=8;
+      for(g_nwctx=0;g_nwctx<want;g_nwctx++){ g_wctxs[g_nwctx]=cca(g_hdc,g_ctx,ca); if(!g_wctxs[g_nwctx]) break; }   /* shared contexts for the shader compile threads */
+      { extern int g_gl_workers; g_gl_workers= g_nwctx? g_nwctx : 1; } } }
   wglMakeCurrent(NULL,NULL); wglDeleteContext(tmp);
   if(!g_ctx){ fatal("Your graphics card does not support OpenGL 4.3.\nPlease update your GPU driver."); return 0; }
   wglMakeCurrent(g_hdc,g_ctx);
@@ -423,7 +431,16 @@ void* backend_gl_proc(const char* n){
 void backend_gl_vsync(int on){ SWI si=(SWI)wglGetProcAddress("wglSwapIntervalEXT"); if(si) si(on?1:0); }   /* GL thread */
 void backend_gl_swap(void){ if(vkp.on) vkp_swap(); else SwapBuffers(g_hdc); }
 
-int backend_gl_worker_current(void){ return g_wctx && wglMakeCurrent(g_hdc,g_wctx); }
+int backend_gl_worker_current(void){
+  int k=(int)InterlockedIncrement(&g_wnext)-1; if(k>=g_nwctx) return 0;
+  /* each thread on its own hidden window: one device context isn't made current on several threads at once */
+  HINSTANCE hi=GetModuleHandle(NULL);
+  if(InterlockedCompareExchange(&g_wclass,1,0)==0){ WNDCLASSA wc={0}; wc.style=CS_OWNDC; wc.lpfnWndProc=DefWindowProcA; wc.hInstance=hi;
+    wc.lpszClassName="MetroidPrime4RecompShaders"; RegisterClassA(&wc); InterlockedExchange(&g_wclass,2); }
+  while(InterlockedCompareExchange(&g_wclass,2,2)!=2) Sleep(1);
+  HWND w=CreateWindowA("MetroidPrime4RecompShaders","",WS_POPUP,0,0,4,4,NULL,NULL,hi,NULL); HDC dc= w? GetDC(w) : NULL;
+  if(dc){ set_pixel_format(dc); if(wglMakeCurrent(dc,g_wctxs[k])) return 1; }
+  return wglMakeCurrent(g_hdc,g_wctxs[k])? 1 : 0; }
 
 void backend_window_size(int* w, int* h){ *w=g_ww; *h=g_wh; }
 

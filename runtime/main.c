@@ -54,11 +54,7 @@ int g_opt_diag=0;
 /* vsync: on by default off Windows. Without it the 60.00 FPS limiter beats against the display (59.95 Hz here): about once a
    second a frame came in the same refresh as the one before and the next refresh showed the old one again (59 of 3600
    frames in the intro, 2 with vsync) */
-#ifdef _WIN32
-#define VSYNC_DEFAULT 0
-#else
-#define VSYNC_DEFAULT 1
-#endif
+#define VSYNC_DEFAULT 1   /* Windows too: with it off, fullscreen frames tear on NVIDIA (seen at 60-86 FPS) */
 int g_opt_docked=0, g_opt_lang=1, g_opt_res=1, g_opt_fps=1, g_opt_vsync=VSYNC_DEFAULT, g_opt_drs=0;
 int g_opt_media_turns=1;   /* serialize_media_threads, read by kernel.c core0_member */
 int g_opt_sleep_waits=1;   /* sleep_waits, read by glq.c */
@@ -289,7 +285,7 @@ static void ini_apply(const char* k, const char* v){
     else if(!strcmp(k,"shadows")) g_opt_shadows=atoi(v);
     else if(!strcmp(k,"profile")) g_opt_prof=atoi(v);
     else if(!strcmp(k,"low_priority_shader_compiler")) g_opt_cmp_low=atoi(v);
-#if !defined(_WIN32) && !defined(__ANDROID__)
+#if !defined(__ANDROID__)
     else if(!strcmp(k,"shader_threads")){ extern int g_opt_shader_threads; g_opt_shader_threads=atoi(v); if(g_opt_shader_threads<0) g_opt_shader_threads=0; if(g_opt_shader_threads>8) g_opt_shader_threads=8; }   /* backend_x11.c */
 #endif
     else if(!strcmp(k,"dynamic_resolution")) g_opt_resdyn=atoi(v);
@@ -365,14 +361,10 @@ static const IniOpt INI_PERF[]={
   {"video_async_retire","0","1 = retire obsolete video pictures on a bounded worker (experimental; restart required)"},
   {"video_avx2","1","1 = AVX2 video color conversion when the CPU has it (same result as the plain conversion, faster; restart required)"},
   {"video_block_copy","1","1 = video pictures written to tiled memory 64 bytes at a time (same result, faster; restart required)"},
-#ifdef _WIN32
-  {"forced_vsync","0","1 = always wait for vsync (can lower FPS a lot on slow PCs)"},
-#else
   {"forced_vsync","1","1 = wait for vsync: frames reach the screen evenly (0 = no wait: can lower stutter-free FPS on slow PCs,\n;   but frames beat against the display's refresh and tear in fullscreen)"},
-#endif
   {"memory_gb","0","Memory the game sees: 0 = automatic (3.2 GB like the console, more for games that need it,\n;   e.g. Tears of the Kingdom), 4 = console (3.2 GB), 6 or 8 = extended (like yuzu's extended memory layout)"},
   {"low_priority_shader_compiler","1","1 = compile shaders at low priority (less stutter on weak CPUs)"},
-  {"shader_threads","0","Linux: threads that compile new shaders at the same time, 0 = automatic (a quarter of the CPU\n;   threads, 2 to 8), 1 = one like older versions (restart)"},
+  {"shader_threads","0","Threads that compile new shaders at the same time, 0 = automatic (a quarter of the CPU\n;   threads, 2 to 8), 1 = one like older versions (restart)"},
   {"fast_forward","0","1 = Tab (or both stick clicks, L3+R3) toggles fast forward: the game clock runs faster, e.g. to\n;   shorten elevator and train rides (their animations follow the clock). Turn it off again before playing"},
   {"fast_forward_speed","3","Fast forward speed, 2-8 times"},
   {"sleep_waits","1","1 = threads waiting on the OpenGL thread sleep instead of spinning (frees CPU on 2-4 core\n;   PCs and laptops); 0 = spin like older versions"},

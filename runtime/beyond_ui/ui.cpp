@@ -513,11 +513,7 @@ static std::vector<Opt> build_options() {
     // Gameplay
     C("fps_limit", "Performance", "Gameplay", "Frame rate", LIVE_YES, "1", {{"1", "60 FPS (console)"}, {"120", "120 FPS"}, {"144", "144 FPS"}, {"240", "240 FPS"}, {"0", "Unlimited"}},
       "Above 60 is untested with Metroid Prime 4 Beyond: if the game runs too fast or stutters, go back to 60.");
-#ifdef _WIN32
-    B("forced_vsync", "Performance", "Gameplay", "Force VSync", LIVE_YES, "0", "Can lower FPS a lot on slow PCs.");
-#else
     B("forced_vsync", "Performance", "Gameplay", "VSync", LIVE_YES, "1", "Frames reach the screen in step with its refresh: no stutter from the two clocks drifting, no tearing.");
-#endif
     B("show_fps", "Graphics", "Gameplay", "FPS counter", LIVE_YES, "0", "Shows the frames per second that reach the screen, in the top-left corner.");
     I("fov", "Gameplay", "Gameplay", "Field of view", LIVE_YES, "100", 60, 160, 5, "Percent of the game's own field of view. Needs a FOV hook for your game build (beyond/fov_hooks.txt).");
     B("cheats", "Gameplay", "Gameplay", "Cheat codes", LIVE_YES, "1", "Runs the cheats you turn on in the Cheats page (Atmosphere format files in the game's cheats folder).");
