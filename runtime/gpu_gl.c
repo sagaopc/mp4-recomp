@@ -2064,7 +2064,12 @@ static void bind_gbufs(int stage, Sh* s){
        contiguous GPU memory as is mapped from it, up to 1 MB */
     u64 addr=0; u32 size=16; u32 bank=s->si.gbuf_cbuf_idx[i]; u64 cbb= bank<18? g_cb.cb[stage][bank] : 0; (void)cb0;
     if(cbb){ u32 v[3]; gmem_read(cbb+s->si.gbuf_cbuf_off[i],v,12); addr=((u64)v[1]<<32)|v[0]; size= s->si.gbuf_sized[i]? v[2] : 0; }
-    if(addr && !s->si.gbuf_sized[i]){ extern u64 gmmu_run(u64,u64,u64*); u64 cpu=0; u64 run=gmmu_run(addr,1u<<20,&cpu); size= run>16? (u32)run : 16; }
+    if(addr && !s->si.gbuf_sized[i]){ extern u64 gmmu_run(u64,u64,u64*); u64 cpu=0; u64 run=gmmu_run(addr,1u<<20,&cpu); size= run>16? (u32)run : 16; }
+    /* SWR_SSBO_PAD=1 (test): a sized buffer is bound with the GPU memory mapped after it too, up to 1 MB. NVIDIA returns 0
+       for reads past a bound range, AMD (where Prime 4 was tested) reads the memory that is there; a lookup table indexed
+       past NVN's declared size would only work on AMD */
+    { static int pad=-1; if(pad<0) pad=getenv("SWR_SSBO_PAD")!=NULL;
+      if(pad && addr && s->si.gbuf_sized[i]){ extern u64 gmmu_run(u64,u64,u64*); u64 cpu=0; u64 run=gmmu_run(addr,1u<<20,&cpu); if(run>size) size=(u32)run; } }
     { u32 nv[4]={0,0,0,0}; if(cbb) gmem_read(cbb+s->si.gbuf_cbuf_off[i],nv,16);
       trace_note("  %s gbuf%d: cb%u[0x%x] -> address %llx, next words %08x %08x, %s, bound %u bytes\n",stage==0? "vs" : "fs",i,bank,s->si.gbuf_cbuf_off[i],(unsigned long long)addr,nv[2],nv[3],s->si.gbuf_sized[i]? "size from NVN's table" : "size from the mapping",size); }
     if(!size) size=16; if(size>(16u<<20)) size=16u<<20; size=(size+3)&~3u;
