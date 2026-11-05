@@ -1,7 +1,8 @@
 # Builds the Windows release (runtime EXE + recompiler + bundled GCC and Python) from this repository, the way
 # build.bat does, with the toolchain it expects: winlibs GCC 14.2.0 (UCRT, POSIX threads) in gcc\Library, Python 3.12
-# embeddable in python\, and redist\zlib1.dll + redist\SDL2.dll. The native Vulkan renderer (ScarletNX) is left out,
-# as the game renders with OpenGL by default; that also removes the glslang requirement.
+# embeddable in python\, and redist\zlib1.dll + redist\SDL2.dll. The native Vulkan renderer (ScarletNX,
+# renderer=vulkan_native, experimental) is built when glslang is available; if that step fails the build goes on
+# without it, since the game renders with OpenGL by default.
 name: windows-build
 
 on:
@@ -51,13 +52,31 @@ jobs:
           cp gcc/Library/bin/zlib1.dll redist/zlib1.dll
           ls -la redist
 
+      - name: Native Vulkan renderer (optional, experimental)
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          url=$(gh api --paginate 'repos/KhronosGroup/glslang/releases?per_page=100' \
+            --jq '.[] | select(.tag_name | test("^1[5-9]\\.")) | .assets[]
+                  | select(.name | test("windows.*x64.*Release\\.zip$"; "i")) | .browser_download_url' | head -n 1)
+          test -n "$url" || { echo "no glslang Windows build found"; exit 1; }
+          echo "glslang: $url"
+          curl -fsSL --retry 3 -o glslang.zip "$url"
+          7z x -y -oglslang glslang.zip > /dev/null
+          exe=$(find glslang -iname glslang.exe | head -n 1)
+          test -n "$exe"
+          GLSLANG="$(cygpath -w "$PWD/$exe")" SWR_NO_DLSS=1 PATH="$PWD/gcc/Library/bin:$PATH" python/python.exe work-profiler/build_snxvk2.py
+          ls -la runtime/snxvk/*.a
+
       - name: Build
         shell: cmd
         run: |
           set "PATH=%CD%\gcc\Library\bin;%PATH%"
           python\python.exe work-profiler\build_imgui.py || exit /b 1
           set SWR_RELEASE=1
-          set SWR_NO_SNXVK=1
           python\python.exe switchrecomp.py --build-runtime --cc "%CD%\gcc\Library\bin\gcc.exe" || exit /b 1
           if not exist bin\runtime_win64_win32.exe exit /b 1
           python\python.exe beyond\make_release.py release release\out --version %VERSION% --exe bin\runtime_win64_win32.exe || exit /b 1
